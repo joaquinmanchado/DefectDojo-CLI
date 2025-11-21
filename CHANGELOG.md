@@ -1,5 +1,25 @@
 # Change log
 
+## [0.1.18] - 2025-11-22
+
+Added SBOM to project
+
+### Updated
+
+Minor adjustments.
+
+## [0.1.17] - 2025-11-22
+
+### Updated
+
+Dependency update, moved Dockerbuild to alpine
+
+## [0.1.16] - 2025-11-22
+
+### Added
+
+- New command, `products`, to add a new product.
+
 ## [0.1.15] - 2025-02-20
 
 ### Updated
