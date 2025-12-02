@@ -23,6 +23,7 @@ class Findings(object):
         import          Import findings (scan results)
         reimport        Re-import findings of a test
         list            List findings
+        search          Search findings by product/engagement/test names
         update          Update a finding
         close           Close a finding
 """,
@@ -951,3 +952,494 @@ class Findings(object):
         # Replace the response body with the one we created
         type(response).text = PropertyMock(return_value=json.dumps(json_out_result))
         return response
+
+    def search(
+        self,
+        url,
+        api_key,
+        product_name=None,
+        engagement_name=None,
+        test_name=None,
+        active=None,
+        closed=None,
+        valid=None,
+        scope=None,
+        limit=None,
+        **kwargs,
+    ):
+        """
+        Search findings using names instead of IDs.
+        At least one of product_name, engagement_name, or test_name must be provided.
+        """
+        # Validate that at least one search parameter is provided
+        if not any([product_name, engagement_name, test_name]):
+            raise ValueError(
+                "At least one of --product_name, --engagement_name, or --test_name must be provided"
+            )
+
+        API_URL = url + "/api/v2"
+        
+        # Step 1: Resolve product_name to product_id if provided
+        product_id = None
+        if product_name:
+            products_url = API_URL + "/products/"
+            params = {"name": product_name}
+            response = Util().request_apiv2("GET", products_url, api_key, params=params)
+            products_data = json.loads(response.text)
+            
+            if products_data.get("count", 0) == 0:
+                raise ValueError(f"No product found with exact name: '{product_name}'")
+            elif products_data.get("count", 0) > 1:
+                raise ValueError(f"Multiple products found with name: '{product_name}'. Please contact support.")
+            
+            product_id = products_data["results"][0]["id"]
+            print(f"✓ Found product: '{product_name}' (ID: {product_id})")
+
+        # Step 2: Resolve engagement_name to engagement_id if provided
+        engagement_id = None
+        if engagement_name:
+            engagements_url = API_URL + "/engagements/"
+            params = {"name": engagement_name}
+            
+            # If we have product_id, use it to narrow down the search
+            if product_id:
+                params["product"] = product_id
+            
+            response = Util().request_apiv2("GET", engagements_url, api_key, params=params)
+            engagements_data = json.loads(response.text)
+            
+            if engagements_data.get("count", 0) == 0:
+                context = f" in product '{product_name}'" if product_name else ""
+                raise ValueError(f"No engagement found with exact name: '{engagement_name}'{context}")
+            elif engagements_data.get("count", 0) > 1:
+                context = f" in product '{product_name}'" if product_name else ""
+                raise ValueError(
+                    f"Multiple engagements found with name: '{engagement_name}'{context}. "
+                    f"Please specify --product_name to narrow down the search."
+                )
+            
+            engagement_id = engagements_data["results"][0]["id"]
+            print(f"✓ Found engagement: '{engagement_name}' (ID: {engagement_id})")
+
+        # Step 3: Resolve test_name to test_id if provided
+        test_id = None
+        if test_name:
+            tests_url = API_URL + "/tests/"
+            params = {"title": test_name}
+            
+            # If we have engagement_id, use it to narrow down the search
+            if engagement_id:
+                params["engagement"] = engagement_id
+            
+            response = Util().request_apiv2("GET", tests_url, api_key, params=params)
+            tests_data = json.loads(response.text)
+            
+            if tests_data.get("count", 0) == 0:
+                context = f" in engagement '{engagement_name}'" if engagement_name else ""
+                raise ValueError(f"No test found with exact name: '{test_name}'{context}")
+            elif tests_data.get("count", 0) > 1:
+                context = f" in engagement '{engagement_name}'" if engagement_name else ""
+                raise ValueError(
+                    f"Multiple tests found with name: '{test_name}'{context}. "
+                    f"Please specify --engagement_name to narrow down the search."
+                )
+            
+            test_id = tests_data["results"][0]["id"]
+            print(f"✓ Found test: '{test_name}' (ID: {test_id})")
+
+        # Step 4: Build request parameters with filters
+        request_params = dict()
+        FINDINGS_URL = API_URL + "/findings/"
+        
+        if product_id is not None:
+            request_params["test__engagement__product"] = product_id
+        if engagement_id is not None:
+            request_params["test__engagement"] = engagement_id
+        if test_id is not None:
+            request_params["test"] = test_id
+        if active is not None:
+            if active is True:
+                request_params["active"] = "true"
+            elif active is False:
+                request_params["active"] = "false"
+        if closed is not None and closed is True:
+            request_params["is_mitigated"] = "true"
+        if valid is not None:
+            if valid is True:
+                request_params["false_p"] = "false"
+            elif valid is False:
+                request_params["false_p"] = "true"
+        if scope is not None:
+            if scope is True:
+                request_params["out_of_scope"] = "false"
+            elif scope is False:
+                request_params["out_of_scope"] = "true"
+        
+        # Get limit
+        if limit is not None:
+            request_params["limit"] = limit
+        else:
+            # Make a request to get total count
+            temp_params = request_params.copy()
+            temp_params["limit"] = 1
+            temp_response = Util().request_apiv2(
+                "GET", FINDINGS_URL, api_key, params=temp_params
+            )
+            total_count = int(json.loads(temp_response.text)["count"])
+            request_params["limit"] = total_count
+        
+        print("\nSearching for findings with filters:")
+        print(f"  DEBUG - Parameters being sent to API:")
+        for key, value in request_params.items():
+            print(f"    {key}: {value}")
+        if active is not None:
+            print(f"  - Active filter: {active}")
+        if closed:
+            print(f"  - Mitigated filter: True")
+        if valid is not None:
+            print(f"  - Valid filter: {valid}")
+        print()
+        
+        # Make request
+        response = Util().request_apiv2(
+            "GET", FINDINGS_URL, api_key, params=request_params
+        )
+        return response
+
+    def _search(self):
+        """CLI interface for search command"""
+        parser = argparse.ArgumentParser(
+            description="Search findings using product/engagement/test names instead of IDs",
+            usage="defectdojo findings search [<args>]",
+            formatter_class=RichHelpFormatter,
+        )
+        optional = parser._action_groups.pop()
+        required = parser.add_argument_group("required arguments")
+        
+        required.add_argument(
+            "--url",
+            action=EnvDefaults,
+            envvar="DEFECTDOJO_URL",
+            help="DefectDojo URL",
+            required=True,
+        )
+        required.add_argument(
+            "--api_key",
+            action=EnvDefaults,
+            envvar="DEFECTDOJO_API_KEY",
+            help="API v2 Key",
+            required=True,
+        )
+        
+        search_params = parser.add_argument_group("search parameters (at least one required)")
+        search_params.add_argument(
+            "--product_name",
+            help="Exact name of the product",
+        )
+        search_params.add_argument(
+            "--engagement_name",
+            help="Exact name of the engagement",
+        )
+        search_params.add_argument(
+            "--test_name",
+            help="Exact name/title of the test",
+        )
+        
+        optional.add_argument(
+            "--active",
+            help="List only active findings",
+            action="store_true",
+            dest="active",
+        )
+        optional.add_argument(
+            "--inactive",
+            help="List only inactive findings",
+            action="store_false",
+            dest="active",
+        )
+        optional.add_argument(
+            "--closed",
+            help="List only closed/mitigated findings",
+            action="store_true"
+        )
+        optional.add_argument(
+            "--valid",
+            help="List only valid findings (true-positives)",
+            action="store_true",
+            dest="valid",
+        )
+        optional.add_argument(
+            "--false_positives",
+            help="List only false-positives findings",
+            action="store_false",
+            dest="valid",
+        )
+        optional.add_argument(
+            "--in_scope",
+            help="List only findings in-scope",
+            action="store_true",
+            dest="scope",
+        )
+        optional.add_argument(
+            "--out_of_scope",
+            help="List only findings out-of-scope",
+            action="store_false",
+            dest="scope",
+        )
+        optional.add_argument(
+            "--json",
+            help="Print output in JSON format",
+            action="store_true",
+            default=False,
+        )
+        optional.add_argument(
+            "--limit",
+            help="Number of results to return (by default it gets all findings)",
+        )
+        optional.add_argument(
+            "--fail_if_found",
+            help="Returns a non-zero exit code if any findings with the passed "
+            "severity (or higher) are returned (default = NULL)",
+            default="NULL",
+            choices=["NULL", "Info", "Low", "Medium", "High", "Critical"],
+        )
+        
+        optional.set_defaults(active=None, valid=None, scope=None, closed=None)
+        parser._action_groups.append(optional)
+        
+        # Parse arguments
+        args = vars(parser.parse_args(sys.argv[3:]))
+        
+        # Execute search
+        try:
+            response = self.search(**args)
+            
+            # Print output with detailed information
+            json_out = json.loads(response.text)
+            if response.status_code == 200:
+                if args["json"] is True:
+                    pretty_json_out = json.dumps(json_out, indent=4)
+                    print(pretty_json_out)
+                    sys.exit(0)
+                else:
+                    findings = json_out["results"]
+                    total_findings = len(findings)
+                    
+                    # Calculate statistics
+                    active_count = sum(1 for f in findings if f.get("active", False))
+                    inactive_count = total_findings - active_count
+                    mitigated_count = sum(1 for f in findings if f.get("is_Mitigated", False))
+                    verified_count = sum(1 for f in findings if f.get("verified", False))
+                    false_positive_count = sum(1 for f in findings if f.get("false_p", False))
+                    
+                    # Severity breakdown
+                    severity_counts = {
+                        "Critical": sum(1 for f in findings if f.get("severity") == "Critical"),
+                        "High": sum(1 for f in findings if f.get("severity") == "High"),
+                        "Medium": sum(1 for f in findings if f.get("severity") == "Medium"),
+                        "Low": sum(1 for f in findings if f.get("severity") == "Low"),
+                        "Info": sum(1 for f in findings if f.get("severity") == "Info"),
+                    }
+                    
+                    # Print summary
+                    print("=" * 80)
+                    print("FINDINGS SUMMARY")
+                    print("=" * 80)
+                    print(f"Total Findings:          {total_findings}")
+                    print(f"Active:                  {active_count}")
+                    print(f"Inactive:                {inactive_count}")
+                    print(f"Mitigated:               {mitigated_count}")
+                    print(f"Verified:                {verified_count}")
+                    print(f"False Positives:         {false_positive_count}")
+                    print("\nSeverity Breakdown:")
+                    print(f"  Critical:              {severity_counts['Critical']}")
+                    print(f"  High:                  {severity_counts['High']}")
+                    print(f"  Medium:                {severity_counts['Medium']}")
+                    print(f"  Low:                   {severity_counts['Low']}")
+                    print(f"  Info:                  {severity_counts['Info']}")
+                    print("=" * 80)
+                    
+                    if total_findings > 0:
+                        # Print components
+                        components = set()
+                        for finding in findings:
+                            if finding.get("component_name"):
+                                if finding.get("component_version"):
+                                    components.add(
+                                        f"    {finding['component_name']} v{finding['component_version']}"
+                                    )
+                                else:
+                                    components.add(f"    {finding['component_name']}")
+                        
+                        if components:
+                            print("\nVulnerable Components:")
+                            for component in sorted(components):
+                                print(component)
+                        
+                        # Print detailed findings table
+                        print("\n" + "=" * 80)
+                        print("DETAILED FINDINGS")
+                        print("=" * 80 + "\n")
+                        
+                        for idx, finding in enumerate(findings, 1):
+                            print(f"\n{'─' * 80}")
+                            print(f"Finding #{idx}")
+                            print(f"{'─' * 80}")
+                            
+                            # Basic info
+                            print(f"Title:                   {finding.get('title', 'N/A')}")
+                            print(f"Severity:                {finding.get('severity', 'N/A')}")
+                            print(f"Status:                  {'Active' if finding.get('active') else 'Inactive'}")
+                            print(f"Mitigated:               {'Yes' if finding.get('is_Mitigated') else 'No'}")
+                            print(f"Verified:                {'Yes' if finding.get('verified') else 'No'}")
+                            print(f"False Positive:          {'Yes' if finding.get('false_p') else 'No'}")
+                            
+                            # Age calculation
+                            if finding.get('date'):
+                                try:
+                                    finding_date = datetime.strptime(finding['date'].split('T')[0], '%Y-%m-%d')
+                                    age_days = (datetime.now() - finding_date).days
+                                    print(f"Age:                     {age_days} days")
+                                    print(f"Date Found:              {finding['date'].split('T')[0]}")
+                                except:
+                                    print(f"Date Found:              {finding.get('date', 'N/A')}")
+                            
+                            # Vulnerability details
+                            if finding.get('cwe'):
+                                print(f"CWE:                     {finding['cwe']}")
+                            
+                            if finding.get('vulnerability_ids'):
+                                vuln_ids = finding['vulnerability_ids']
+                                if isinstance(vuln_ids, list) and vuln_ids:
+                                    print(f"Vulnerability IDs:       {', '.join(map(str, vuln_ids))}")
+                                elif vuln_ids:
+                                    print(f"Vulnerability IDs:       {vuln_ids}")
+                            
+                            # EPSS scores
+                            if finding.get('epss_score') is not None:
+                                print(f"EPSS Score:              {finding['epss_score']}")
+                            
+                            if finding.get('epss_percentile') is not None:
+                                print(f"EPSS Percentile:         {finding['epss_percentile']}")
+                            
+                            # Reporter and assignment
+                            if finding.get('reporter'):
+                                print(f"Reporter:                {finding['reporter']}")
+                            
+                            if finding.get('found_by'):
+                                found_by_list = finding['found_by']
+                                if isinstance(found_by_list, list) and found_by_list:
+                                    print(f"Found By:                {', '.join(map(str, found_by_list))}")
+                            
+                            # Group/Team - checking different possible fields
+                            if finding.get('reviewer'):
+                                print(f"Reviewer:                {finding['reviewer']}")
+                            
+                            # SLA and remediation
+                            if finding.get('sla_start_date'):
+                                print(f"SLA Start:               {finding['sla_start_date']}")
+                            
+                            if finding.get('sla_expiration_date'):
+                                print(f"SLA Expiration:          {finding['sla_expiration_date']}")
+                            
+                            if finding.get('planned_remediation_date'):
+                                print(f"Planned Remediation:     {finding['planned_remediation_date']}")
+                            
+                            if finding.get('planned_remediation_version'):
+                                print(f"Planned Remediation Ver: {finding['planned_remediation_version']}")
+                            
+                            # Component info
+                            if finding.get('component_name'):
+                                component_str = finding['component_name']
+                                if finding.get('component_version'):
+                                    component_str += f" v{finding['component_version']}"
+                                print(f"Component:               {component_str}")
+                            
+                            # URL
+                            finding_url = args["url"].rstrip("/") + "/finding/" + str(finding["id"])
+                            print(f"URL:                     {finding_url}")
+                            
+                            # Description preview
+                            if finding.get('description'):
+                                desc = finding['description']
+                                desc_preview = desc[:200] + "..." if len(desc) > 200 else desc
+                                print(f"\nDescription:")
+                                print(f"  {desc_preview}")
+                            
+                            # Notes (if any via API call)
+                            finding_id = finding.get('id')
+                            if finding_id:
+                                try:
+                                    notes_url = args["url"].rstrip("/") + f"/api/v2/findings/{finding_id}/notes/"
+                                    notes_response = Util().request_apiv2("GET", notes_url, args["api_key"])
+                                    if notes_response.status_code == 200:
+                                        notes_data = json.loads(notes_response.text)
+                                        if notes_data.get('count', 0) > 0:
+                                            notes_list = notes_data.get('results', [])
+                                            print(f"\nNotes ({notes_data['count']}):")
+                                            for note_idx, note in enumerate(notes_list[:3], 1):
+                                                note_entry = note.get('entry', 'N/A')
+                                                note_author = note.get('author', {})
+                                                if isinstance(note_author, dict):
+                                                    author_name = note_author.get('username', 'Unknown')
+                                                else:
+                                                    author_name = str(note_author)
+                                                note_date = note.get('date', '')
+                                                if note_date:
+                                                    note_date = note_date.split('T')[0]
+                                                print(f"  [{note_idx}] {author_name} ({note_date}):")
+                                                print(f"      {note_entry[:150]}{'...' if len(note_entry) > 150 else ''}")
+                                            
+                                            if notes_data['count'] > 3:
+                                                print(f"  ... and {notes_data['count'] - 3} more note(s)")
+                                except:
+                                    pass  # Skip notes if there's an error
+                        
+                        # Print DefectDojo URL
+                        print("\n" + "=" * 80)
+                        product_id = None
+                        if args.get("product_name"):
+                            # Try to extract product_id from search results
+                            try:
+                                API_URL = args["url"].rstrip("/") + "/api/v2"
+                                products_url = API_URL + "/products/"
+                                params = {"name": args["product_name"]}
+                                prod_response = Util().request_apiv2("GET", products_url, args["api_key"], params=params)
+                                prod_data = json.loads(prod_response.text)
+                                if prod_data.get("count", 0) > 0:
+                                    product_id = prod_data["results"][0]["id"]
+                            except:
+                                pass
+                        
+                        if product_id:
+                            findings_list_url = args["url"].rstrip("/") + f"/product/{product_id}/finding/all"
+                            print(f"View all findings on DefectDojo:\n{findings_list_url}")
+                        print("=" * 80 + "\n")
+                        
+                        # Handle fail_if_found
+                        if args["fail_if_found"] != "NULL":
+                            sev_map = {"Info": 1, "Low": 2, "Medium": 3, "High": 4, "Critical": 5}
+                            
+                            sev_max = max([sev_map.get(f.get("severity"), 0) for f in findings], default=0)
+                            fail_threshold = sev_map.get(args["fail_if_found"], 0)
+                            
+                            if sev_max >= fail_threshold:
+                                sys.exit(1)
+                            else:
+                                sys.exit(0)
+                    else:
+                        print("\nNo findings found matching the criteria.")
+                        sys.exit(0)
+            else:
+                pretty_json_out = json.dumps(json_out, indent=4)
+                print(pretty_json_out)
+                sys.exit(1)
+                
+        except ValueError as e:
+            print(f"\n❌ Error: {str(e)}\n")
+            sys.exit(1)
+        except Exception as e:
+            print(f"\n❌ Unexpected error: {str(e)}\n")
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
