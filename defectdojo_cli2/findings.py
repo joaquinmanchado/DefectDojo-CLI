@@ -258,7 +258,7 @@ class Findings(object):
 
         # Pretty print JSON response
         if not out_error:
-            Util().default_output(response, sucess_status_code=201)
+            Util().default_output(response, success_status_code=201)
         else:
             print(response.text)
 
@@ -421,7 +421,7 @@ class Findings(object):
 
         # Pretty print JSON response
         if not out_error:
-            Util().default_output(response, sucess_status_code=201)
+            Util().default_output(response, success_status_code=201)
         else:
             print(response.text)
 
@@ -656,7 +656,7 @@ class Findings(object):
 
         # Print output
         json_out = json.loads(response.text)
-        if response.status_code == 200:  # Sucess
+        if response.status_code == 200:  # Success
 
             if args["json"] is True:  # If --json flag was passed
                 # Pretty print output in json
@@ -848,7 +848,7 @@ class Findings(object):
         response = self.update(**args)
 
         # Pretty print JSON response
-        Util().default_output(response, sucess_status_code=200)
+        Util().default_output(response, success_status_code=200)
 
     def close(self, url, api_key, finding_id, **kwargs):
         # Prepare parameters
@@ -893,7 +893,7 @@ class Findings(object):
         response = self.close(**args)
 
         # Pretty print JSON response
-        Util().default_output(response, sucess_status_code=200)
+        Util().default_output(response, success_status_code=200)
 
     def add_note(
         self, url, api_key, finding_id, entry, private=None, note_type=None, **kwargs
